@@ -1,0 +1,88 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: movie-service
+  profiles:
+    active: dev
+
+  # Database configuration
+  datasource:
+    url: jdbc:h2:mem:moviedb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  # SQL initialization
+  sql:
+    init:
+      mode: always
+      continue-on-error: true
+
+  # Cache configuration temporaneamente semplificata
+  cache:
+    type: simple  # Usa cache semplice in memoria invece di Redis
+
+  # Redis configuration (commentata temporaneamente)
+  # data:
+  #   redis:
+  #     host: localhost
+  #     port: 6379
+  #     timeout: 2000ms
+
+# Eureka configuration
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka
+    fetch-registry: true
+    register-with-eureka: true
+  instance:
+    prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 30
+    lease-expiration-duration-in-seconds: 90
+
+# Actuator endpoints
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,env
+  endpoint:
+    health:
+      show-details: always
+
+# Logging
+logging:
+  level:
+    com.cinema.movie: DEBUG
+    org.springframework.cache: DEBUG
+
+---
+# Production profile
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: jdbc:postgresql://localhost:5432/movie_db
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:password}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
