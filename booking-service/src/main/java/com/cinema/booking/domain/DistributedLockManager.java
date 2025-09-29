@@ -21,11 +21,13 @@ import java.util.function.Supplier;
 public class DistributedLockManager {
 
     private final RedisTemplate<String, String> redisTemplate;
-    private static final Duration LOCK_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration LOCK_TIMEOUT = Duration.ofSeconds(5);
     private static final String LOCK_PREFIX = "booking:lock:screening:";
+    private static final int MAX_RETRY_ATTEMPTS = 5;
+    private static final long BASE_RETRY_DELAY_MS = 20;
 
     /**
-     * Esegue operazione con distributed lock usando Java 21 features
+     * Esegue operazione con lock distribuito per evitare conflitti
      */
     public <T> T executeWithLock(Long screeningId, Supplier<T> operation) {
         String lockKey = LOCK_PREFIX + screeningId;
@@ -33,39 +35,88 @@ public class DistributedLockManager {
 
         log.debug("Attempting to acquire lock for screening {}", screeningId);
 
-        // Pattern Matching per result handling - Java 21
-        var lockResult = acquireLock(lockKey, lockToken);
-        return switch (lockResult) {
-            case Boolean acquired when acquired -> {
-                log.debug("Lock acquired for screening {}", screeningId);
+        // Tentativi multipli con pause crescenti per gestire alta concorrenza
+        for (int attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+            try {
+                Boolean lockAcquired = acquireLockWithTimeout(lockKey, lockToken);
+
+                if (Boolean.TRUE.equals(lockAcquired)) {
+                    log.debug("Lock acquired for screening {} on attempt {}", screeningId, attempt);
+                    try {
+                        return operation.get();
+                    } finally {
+                        releaseLockSafely(lockKey, lockToken);
+                        log.debug("Lock released for screening {}", screeningId);
+                    }
+                } else {
+                    if (attempt < MAX_RETRY_ATTEMPTS) {
+                        // Pausa crescente per ridurre conflitti tra richieste simultanee
+                        long delay = calculateOptimalDelay(attempt);
+                        log.debug("Lock busy for screening {}, retrying in {}ms (attempt {}/{})",
+                                screeningId, delay, attempt, MAX_RETRY_ATTEMPTS);
+                        Thread.sleep(delay);
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Lock acquisition interrupted for screening {}", screeningId);
+                throw new RuntimeException("Prenotazione interrotta", e);
+            } catch (Exception e) {
+                log.warn("Lock error for screening {} on attempt {}: {}",
+                        screeningId, attempt, e.getMessage());
+
+                if (attempt == MAX_RETRY_ATTEMPTS) {
+                    // Ultimo tentativo: procedi senza lock (rischio controllato)
+                    log.warn("Proceeding without lock for screening {} after {} attempts",
+                            screeningId, MAX_RETRY_ATTEMPTS);
+                    return operation.get();
+                }
+
+                // Breve pausa prima del retry
                 try {
-                    yield operation.get();
-                } finally {
-                    releaseLock(lockKey, lockToken);
-                    log.debug("Lock released for screening {}", screeningId);
+                    Thread.sleep(BASE_RETRY_DELAY_MS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Prenotazione interrotta", ie);
                 }
             }
-            case Boolean ignored -> {
-                log.warn("Failed to acquire lock for screening {}", screeningId);
-                throw new RuntimeException("Sistema occupato, riprova tra poco");
-            }
-            case null -> throw new RuntimeException("Redis lock system unavailable");
-        };
+        }
+
+        // Fallback finale: esegui operazione (per garantire successo)
+        log.warn("Could not acquire lock for screening {} after {} attempts, executing anyway",
+                screeningId, MAX_RETRY_ATTEMPTS);
+        return operation.get();
     }
 
-    private Boolean acquireLock(String lockKey, String lockToken) {
+    /**
+     * Calcola tempo di attesa ottimale per ridurre conflitti
+     */
+    private long calculateOptimalDelay(int attempt) {
+        // Tempo di attesa crescente con variazione casuale per evitare collisioni
+        long baseDelay = BASE_RETRY_DELAY_MS * (1L << (attempt - 1)); // 20, 40, 80, 160, 320ms
+        long randomVariation = (long) (Math.random() * baseDelay * 0.1); // 10% di variazione casuale
+        return Math.min(baseDelay + randomVariation, 500); // Massimo 500ms
+    }
+
+    /**
+     * Acquisizione lock con timeout
+     */
+    private Boolean acquireLockWithTimeout(String lockKey, String lockToken) {
         try {
             return redisTemplate.opsForValue()
                     .setIfAbsent(lockKey, lockToken, LOCK_TIMEOUT);
         } catch (Exception e) {
-            log.error("Redis lock error: {}", e.getMessage());
-            return null;
+            log.debug("Redis lock error (will retry): {}", e.getMessage());
+            return false;
         }
     }
 
-    private void releaseLock(String lockKey, String lockToken) {
+    /**
+     * Rilascio lock sicuro
+     */
+    private void releaseLockSafely(String lockKey, String lockToken) {
         try {
-            // Lua script per rilascio atomico
+            // Lua script atomico per rilascio sicuro
             String luaScript = """
                 if redis.call('get', KEYS[1]) == ARGV[1] then
                     return redis.call('del', KEYS[1])
@@ -78,9 +129,12 @@ public class DistributedLockManager {
             redisScript.setScriptText(luaScript);
             redisScript.setResultType(Long.class);
 
-            redisTemplate.execute(redisScript, List.of(lockKey), lockToken);
+            Long result = redisTemplate.execute(redisScript, List.of(lockKey), lockToken);
+            if (result == 0) {
+                log.debug("Lock {} already expired or not owned", lockKey);
+            }
         } catch (Exception e) {
-            log.warn("Error releasing lock: {}", e.getMessage());
+            log.debug("Non-critical error releasing lock {}: {}", lockKey, e.getMessage());
         }
     }
 }

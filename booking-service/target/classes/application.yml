@@ -28,17 +28,19 @@ spring:
       enabled: true
       path: /h2-console
 
-  # Redis per distributed locking (mission-critical) - configurazione aggiornata
+  # Configurazione Redis per gestire molte richieste simultanee
   data:
     redis:
       host: localhost
       port: 6379
-      timeout: 2000ms
+      timeout: 1000ms  # Tempo massimo per connessione
       lettuce:
         pool:
-          max-active: 20
-          max-idle: 8
-          min-idle: 0
+          max-active: 50   # Massimo connessioni simultanee
+          max-idle: 20     # Connessioni mantenute in standby
+          min-idle: 5      # Connessioni sempre disponibili
+          max-wait: 500ms  # Tempo massimo attesa per connessione dal pool
+        shutdown-timeout: 100ms
 
 # Eureka configuration
 eureka:
@@ -52,33 +54,37 @@ eureka:
     lease-renewal-interval-in-seconds: 30
     lease-expiration-duration-in-seconds: 90
 
-# Feign configuration per chiamate a Movie Service
+# Feign configuration per chiamate veloci ai servizi esterni
 feign:
   client:
     config:
       movie-service:
-        connect-timeout: 2000
-        read-timeout: 5000
-        logger-level: basic
+        connect-timeout: 1000    # Tempo massimo per stabilire connessione
+        read-timeout: 2000       # Tempo massimo per ricevere risposta
+        logger-level: none       # Disabilita log per velocità
   httpclient:
     enabled: true
-    max-connections: 200
-    max-connections-per-route: 50
+    max-connections: 500         # Massimo connessioni totali
+    max-connections-per-route: 100  # Massimo connessioni per servizio
+    connection-timeout: 1000     # Timeout connessione HTTP
+    connection-timer-repeat: 3000
 
-# Circuit Breaker per resilienza - configurazione corretta
+# Circuit Breaker per gestire fallimenti dei servizi esterni
 resilience4j:
   circuitbreaker:
     instances:
       movie-service:
-        failure-rate-threshold: 50
-        wait-duration-in-open-state: 10s
-        sliding-window-size: 10
-        minimum-number-of-calls: 5
+        failure-rate-threshold: 70      # Percentuale errori prima di aprire circuito
+        wait-duration-in-open-state: 5s # Tempo attesa prima di riprovare
+        sliding-window-size: 20         # Numero chiamate da considerare
+        minimum-number-of-calls: 10     # Chiamate minime prima di valutare
+        slow-call-rate-threshold: 80    # Percentuale chiamate lente tollerata
+        slow-call-duration-threshold: 2000ms
   retry:
     instances:
       movie-service:
-        max-attempts: 3
-        wait-duration: 1s
+        max-attempts: 2              # Numero massimo tentativi
+        wait-duration: 100ms         # Pausa tra tentativi
 
 # Actuator endpoints per monitoring mission-critical
 management:

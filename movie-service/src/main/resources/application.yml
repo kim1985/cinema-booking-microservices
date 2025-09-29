@@ -21,28 +21,24 @@ spring:
     properties:
       hibernate:
         format_sql: true
+    defer-datasource-initialization: true  # IMPORTANTE: per caricare data.sql DOPO DDL
 
   h2:
     console:
       enabled: true
       path: /h2-console
 
-  # SQL initialization
+  # SQL initialization - CONFIGURAZIONE CORRETTA
   sql:
     init:
       mode: always
       continue-on-error: true
+      data-locations: classpath:data.sql
+      encoding: UTF-8
 
   # Cache configuration temporaneamente semplificata
   cache:
     type: simple  # Usa cache semplice in memoria invece di Redis
-
-  # Redis configuration (commentata temporaneamente)
-  # data:
-  #   redis:
-  #     host: localhost
-  #     port: 6379
-  #     timeout: 2000ms
 
 # Eureka configuration
 eureka:
@@ -66,11 +62,13 @@ management:
     health:
       show-details: always
 
-# Logging
+# Logging per debug
 logging:
   level:
     com.cinema.movie: DEBUG
     org.springframework.cache: DEBUG
+    org.springframework.jdbc: DEBUG  # Per vedere SQL execution
+    org.springframework.boot.autoconfigure.sql.init: DEBUG  # Per vedere data loading
 
 ---
 # Production profile
